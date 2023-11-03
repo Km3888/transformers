@@ -285,6 +285,75 @@ class RobertaSelfAttention(nn.Module):
             outputs = outputs + (past_key_value,)
         return outputs
 
+class MLP(nn.Module):
+
+    def __init__(self,input_size,output_size,hidden_size):
+        #single hidden layer MLP
+        super(MLP,self).__init__()
+        self.fc1 = nn.Linear(input_size,hidden_size)
+        self.fc2 = nn.Linear(hidden_size,output_size)
+        self.relu = nn.ReLU()
+    
+    def forward(self,x):
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x
+
+class ModifiedSelfAttention(nn.Module):
+
+    def __init__(self, config, position_embedding_type=None):
+        self.num_attention_heads = config.num_attention_heads
+        self.attention_head_size = int(config.hidden_size / config.num_attention_heads)
+        self.all_head_size = self.num_attention_heads * self.attention_head_size
+
+        self.local_transform = MLP(self.all_head_size,self.all_head_size,self.all_head_size)
+        self.global_transform = MLP(self.all_head_size,self.all_head_size,self.all_head_size)
+
+        self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
+        self.position_embedding_type = position_embedding_type or getattr(
+            config, "position_embedding_type", "absolute"
+        )#include for now but really shoudn't need positional embeddings
+
+        self.is_decoder = config.is_decoder
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.FloatTensor] = None,
+        head_mask: Optional[torch.FloatTensor] = None,
+        encoder_hidden_states: Optional[torch.FloatTensor] = None,
+        encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        past_key_value: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
+        output_attentions: Optional[bool] = False,
+    ) -> Tuple[torch.Tensor]:
+        mixed_query_layer = self.query(hidden_states)
+
+        local_embs = self.local_transform(hidden_states)
+        self.A = self.compute_dp(local_embs)
+        span_embs = self.global_transform(self.A)
+        span_embs = self.dropout(self.span_embs)
+        
+        new_embs = torch.sum(self.span_embs,dim=-1)
+        return new_embs
+
+    def compute_dp(self,local_embs):
+        #compute dp matrix
+        #hidden_states: (batch_size,seq_len,hidden_size)
+        #attention_mask: (batch_size,seq_len)
+        #dp_matrix: (batch_size,seq_len,seq_len)
+        batch_size,seq_len,hidden_size = hidden_states.shape
+        
+        curr_vec = torch.diag(dim1=-2,dim2=-1)
+        dp_matrix = torch.diag_embed(offset=0,first_vec,dim1=-2,dim2=-1)
+        for i in range(1,seq_len):
+            shifted_input = torch.roll(curr_vec,1,dims=1)
+            new_vec = curr_vec + shifted_input
+            new_vec = new_vec[:,1:]
+            dp_matrix += torch.diag_embed(curr_vec,offset=-i,dim1=-2,dim2=-1)
+            curr_vec = new_vec
+        return dp_matrix
+
 
 # Copied from transformers.models.bert.modeling_bert.BertSelfOutput
 class RobertaSelfOutput(nn.Module):
@@ -607,6 +676,8 @@ class RobertaPreTrainedModel(PreTrainedModel):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
+class ModifiedPreTrainedModel(PreTrainedModel):
+    pass
 
 ROBERTA_START_DOCSTRING = r"""
 
