@@ -33,6 +33,8 @@ from typing import Optional
 import datasets
 import evaluate
 from datasets import load_dataset
+from pathlib import Path
+import pdb
 
 import transformers
 from transformers import (
@@ -246,15 +248,15 @@ def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
-
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    parser.add_argument("--debug_mode",action="store_true",default=False)
+    parser.add_argument("--modified",action="store_true",default=False)
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        model_args, data_args, training_args,args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
+        model_args, data_args, training_args,args = parser.parse_args_into_dataclasses()
     if model_args.use_auth_token is not None:
         warnings.warn(
             "The `use_auth_token` argument is deprecated and will be removed in v4.34. Please use `token` instead.",
@@ -321,32 +323,51 @@ def main():
     #
     # In distributed training, the load_dataset function guarantee that only one local process can concurrently
     # download the dataset.
+    datasets.config.HF_DATASETS_CACHE = Path("/scratch/wpy2004/book_corpus/mixed")
+    datasets.config.DOWNLOADED_DATASETS_PATH = Path("/scratch/wpy2004/book_corpus/mixed")
     if data_args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
         raw_datasets = load_dataset(
             data_args.dataset_name,
             data_args.dataset_config_name,
             cache_dir=model_args.cache_dir,
-            token=model_args.token,
+            # token=model_args.token,
             streaming=data_args.streaming,
         )
         if "validation" not in raw_datasets.keys():
-            raw_datasets["validation"] = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                split=f"train[:{data_args.validation_split_percentage}%]",
-                cache_dir=model_args.cache_dir,
-                token=model_args.token,
-                streaming=data_args.streaming,
-            )
-            raw_datasets["train"] = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                split=f"train[{data_args.validation_split_percentage}%:]",
-                cache_dir=model_args.cache_dir,
-                token=model_args.token,
-                streaming=data_args.streaming,
-            )
+            if args.debug_mode:
+                raw_datasets["validation"] = load_dataset( \
+                    data_args.dataset_name, \
+                    data_args.dataset_config_name, \
+                    split="train[:10]", \
+                    cache_dir=model_args.cache_dir, \
+                    streaming=data_args.streaming, \
+                )
+                raw_datasets["train"] = load_dataset(
+                    data_args.dataset_name,
+                    data_args.dataset_config_name,
+                    split="train[11:30]",
+                    cache_dir=model_args.cache_dir,
+                    # token=model_args.token,
+                    streaming=data_args.streaming,
+                )
+            else:
+                raw_datasets["validation"] = load_dataset(
+                    data_args.dataset_name,
+                    data_args.dataset_config_name,
+                    split=f"train[:{data_args.validation_split_percentage}%]",
+                    cache_dir=model_args.cache_dir,
+                    # token=model_args.token,
+                    streaming=data_args.streaming,
+                )
+                raw_datasets["train"] = load_dataset(
+                    data_args.dataset_name,
+                    data_args.dataset_config_name,
+                    split=f"train[{data_args.validation_split_percentage}%:]",
+                    cache_dir=model_args.cache_dir,
+                    # token=model_args.token,
+                    streaming=data_args.streaming,
+                )
     else:
         data_files = {}
         if data_args.train_file is not None:
@@ -361,7 +382,7 @@ def main():
             extension,
             data_files=data_files,
             cache_dir=model_args.cache_dir,
-            token=model_args.token,
+            # token=model_args.token,
         )
 
         # If no validation data is there, validation_split_percentage will be used to divide the dataset.
@@ -371,14 +392,14 @@ def main():
                 data_files=data_files,
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
-                token=model_args.token,
+                # token=model_args.token,
             )
             raw_datasets["train"] = load_dataset(
                 extension,
                 data_files=data_files,
                 split=f"train[{data_args.validation_split_percentage}%:]",
                 cache_dir=model_args.cache_dir,
-                token=model_args.token,
+                # token=model_args.token,
             )
 
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
@@ -416,6 +437,7 @@ def main():
     }
     if model_args.tokenizer_name:
         tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
+        tokenizer.model_max_length = 1024
     elif model_args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
     else:
@@ -424,6 +446,8 @@ def main():
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
 
+    model_args.model_name_or_path=None
+    config.modified = args.modified
     if model_args.model_name_or_path:
         model = AutoModelForMaskedLM.from_pretrained(
             model_args.model_name_or_path,
@@ -431,7 +455,7 @@ def main():
             config=config,
             cache_dir=model_args.cache_dir,
             revision=model_args.model_revision,
-            token=model_args.token,
+            # token=model_args.token,
             trust_remote_code=model_args.trust_remote_code,
             low_cpu_mem_usage=model_args.low_cpu_mem_usage,
         )
@@ -452,9 +476,10 @@ def main():
     else:
         column_names = list(raw_datasets["validation"].features)
     text_column_name = "text" if "text" in column_names else column_names[0]
-
+    print(tokenizer.model_max_length)
     if data_args.max_seq_length is None:
         max_seq_length = tokenizer.model_max_length
+        
         if max_seq_length > 1024:
             logger.warning(
                 "The chosen tokenizer supports a `model_max_length` that is longer than the default `block_size` value"
@@ -684,4 +709,6 @@ def _mp_fn(index):
 
 
 if __name__ == "__main__":
+    print('start')
+    import sys; sys.stdout.flush()
     main()
